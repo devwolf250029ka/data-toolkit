@@ -1,34 +1,29 @@
 # data-toolkit
 
-A personal collection of practical utilities for cleaning, transforming, and inspecting everyday datasets.
+A personal collection of practical utilities for cleaning, transforming, and inspecting data.
 
 ## Features
 
-- Clean and normalize CSV and JSON data
-- Filter, sort, and reshape records
-- Summarize columns and detect missing values
-- Convert between supported data formats
-- Simple command-line interface
-- Lightweight and easy to extend
+- Read and write common tabular data formats
+- Clean missing, duplicate, and inconsistent values
+- Filter, sort, and transform datasets
+- Generate quick dataset summaries
+- Run repeatable operations from the command line
 
 ## Install
 
-Clone the repository and install it locally:
-
-    git clone https://github.com/your-username/data-toolkit.git
-    cd data-toolkit
-    pip install -e .
+```bash
+git clone https://github.com/<your-username>/data-toolkit.git
+cd data-toolkit
+python -m pip install -e .
+```
 
 ## Usage
 
-Inspect a dataset:
+```bash
+data-toolkit inspect data.csv
+data-toolkit clean data.csv --output cleaned.csv
+data-toolkit convert data.csv --output data.json
+```
 
-    data-toolkit inspect data.csv
-
-Clean a file and save the result:
-
-    data-toolkit clean data.csv --output cleaned.csv
-
-View all commands and options:
-
-    data-toolkit --help
+Run `data-toolkit --help` to see all commands and options.

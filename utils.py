@@ -1,23 +1,28 @@
-"""General-purpose helpers for data loading, transformation, and validation."""
+"""General-purpose helpers for the data-toolkit project."""
 
-import csv
+from __future__ import annotations
+
 import json
-from collections.abc import Iterable, Iterator, Mapping
+import os
+import tempfile
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from itertools import islice
 from pathlib import Path
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+_MISSING = object()
 
 
-def read_json(path: str | Path, *, encoding: str = "utf-8") -> Any:
-    """Read and deserialize a JSON file.
+def load_json(path: str | os.PathLike[str], *, encoding: str = "utf-8") -> Any:
+    """Load and decode JSON data from a file.
 
     Args:
         path: Path to the JSON file.
         encoding: Text encoding used to read the file.
 
     Returns:
-        The deserialized JSON value.
+        The decoded JSON value.
 
     Raises:
         FileNotFoundError: If the file does not exist.
@@ -27,84 +32,62 @@ def read_json(path: str | Path, *, encoding: str = "utf-8") -> Any:
         return json.load(file)
 
 
-def read_csv(
-    path: str | Path,
+def save_json(
+    data: Any,
+    path: str | os.PathLike[str],
     *,
-    encoding: str = "utf-8-sig",
-    delimiter: str = ",",
-) -> list[dict[str, str]]:
-    """Read a CSV file into a list of row dictionaries.
+    encoding: str = "utf-8",
+    indent: int | None = 2,
+) -> None:
+    """Serialize data to JSON and atomically replace the destination file.
+
+    Parent directories are created automatically. If serialization or writing
+    fails, the existing destination file remains unchanged.
 
     Args:
-        path: Path to the CSV file.
-        encoding: Text encoding used to read the file.
-        delimiter: Single-character field delimiter.
-
-    Returns:
-        Rows keyed by the CSV header fields.
+        data: JSON-serializable value to write.
+        path: Destination file path.
+        encoding: Text encoding used to write the file.
+        indent: JSON indentation width, or ``None`` for compact output.
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        ValueError: If the file has no header row or the delimiter is invalid.
+        TypeError: If data is not JSON serializable.
+        OSError: If the destination cannot be written or replaced.
     """
-    if len(delimiter) != 1:
-        raise ValueError("delimiter must be exactly one character")
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
 
-    with Path(path).open("r", encoding=encoding, newline="") as file:
-        reader = csv.DictReader(file, delimiter=delimiter)
-        if reader.fieldnames is None:
-            raise ValueError("CSV file must contain a header row")
-        return [dict(row) for row in reader]
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding=encoding,
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as file:
+            temporary_path = Path(file.name)
+            json.dump(data, file, ensure_ascii=False, indent=indent)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+
+        os.replace(temporary_path, destination)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
-def flatten_mapping(
-    data: Mapping[str, Any],
-    *,
-    separator: str = ".",
-    parent_key: str = "",
-) -> dict[str, Any]:
-    """Flatten nested mappings into keys joined by a separator.
+def chunked(items: Iterable[T], size: int) -> Iterator[list[T]]:
+    """Yield items in lists containing at most ``size`` elements.
 
     Args:
-        data: Mapping to flatten.
-        separator: String inserted between nested key components.
-        parent_key: Optional prefix applied to every generated key.
-
-    Returns:
-        A new flat dictionary. Non-mapping values, including lists, are
-        preserved unchanged.
-
-    Raises:
-        ValueError: If the separator is empty.
-    """
-    if not separator:
-        raise ValueError("separator must not be empty")
-
-    flattened: dict[str, Any] = {}
-    for key, value in data.items():
-        full_key = f"{parent_key}{separator}{key}" if parent_key else key
-        if isinstance(value, Mapping):
-            flattened.update(
-                flatten_mapping(
-                    value,
-                    separator=separator,
-                    parent_key=full_key,
-                )
-            )
-        else:
-            flattened[full_key] = value
-    return flattened
-
-
-def batched(items: Iterable[T], size: int) -> Iterator[list[T]]:
-    """Yield items in lists containing at most the requested number of values.
-
-    Args:
-        items: Any finite iterable of values.
-        size: Maximum number of values in each batch.
+        items: Any finite or streaming iterable.
+        size: Maximum number of elements in each chunk.
 
     Yields:
-        Non-empty lists in input order.
+        Non-empty lists in the original iteration order.
 
     Raises:
         ValueError: If size is less than one.
@@ -112,12 +95,47 @@ def batched(items: Iterable[T], size: int) -> Iterator[list[T]]:
     if size < 1:
         raise ValueError("size must be greater than zero")
 
-    batch: list[T] = []
-    for item in items:
-        batch.append(item)
-        if len(batch) == size:
-            yield batch
-            batch = []
+    iterator = iter(items)
+    while chunk := list(islice(iterator, size)):
+        yield chunk
 
-    if batch:
-        yield batch
+
+def deep_get(
+    data: Mapping[str, Any],
+    path: str | Sequence[str],
+    *,
+    separator: str = ".",
+    default: Any = _MISSING,
+) -> Any:
+    """Retrieve a value from nested mappings.
+
+    Args:
+        data: Root mapping to traverse.
+        path: Key sequence or separator-delimited key string.
+        separator: Delimiter used when path is a string.
+        default: Value returned when a key is absent or traversal encounters
+            a non-mapping value. If omitted, a ``KeyError`` is raised.
+
+    Returns:
+        The nested value, or ``default`` when supplied and traversal fails.
+
+    Raises:
+        KeyError: If traversal fails and no default was supplied.
+        ValueError: If separator is empty for a string path.
+    """
+    if isinstance(path, str):
+        if not separator:
+            raise ValueError("separator must not be empty")
+        keys = path.split(separator) if path else []
+    else:
+        keys = list(path)
+
+    current: Any = data
+    for key in keys:
+        if not isinstance(current, Mapping) or key not in current:
+            if default is _MISSING:
+                raise KeyError(key)
+            return default
+        current = current[key]
+
+    return current
